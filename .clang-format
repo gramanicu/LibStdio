@@ -1,0 +1,22 @@
+---
+Language:        Cpp
+BasedOnStyle:  Google
+AccessModifierOffset: -1
+AllowShortBlocksOnASingleLine: Always
+AllowShortCaseLabelsOnASingleLine: true
+AlignOperands:   true
+AlignTrailingComments: true
+ColumnLimit:     80
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
+IndentWidth:     4
+IndentWrappedFunctionNames: false
+ReflowComments:  true
+FixNamespaceComments: true
+NamespaceIndentation: All
+SortIncludes:    true
+SortUsingDeclarations: true
+SpacesBeforeTrailingComments: 4
+TabWidth:        8
+UseTab:          Never
+...
