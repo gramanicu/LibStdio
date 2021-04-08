@@ -15,6 +15,8 @@
 #include "error_handling.h"
 
 #define BUFSIZE 4096
+#define OP_READ 1
+#define OP_WRITE -1
 
 struct _so_file {
     unsigned char _buf[BUFSIZE];
@@ -22,7 +24,10 @@ struct _so_file {
     int _fd;
     int _flags;
 
-    int _read_pos;
+    int _position;
+    int _last_op;
+    int _last_read;
+    int _total_bytes;
 
     int _eof;
     int _err;
@@ -55,7 +60,7 @@ FUNC_DECL_PREFIX SO_FILE *so_fopen(const char *pathname, const char *mode) {
         return NULL;
     }
 
-    stream->_fd = open(pathname, stream->_flags, 0600);
+    stream->_fd = open(pathname, stream->_flags, 0644);
 
     if (stream->_fd == -1) {
         free(stream);
@@ -63,7 +68,7 @@ FUNC_DECL_PREFIX SO_FILE *so_fopen(const char *pathname, const char *mode) {
     }
 
     /* Move the read pointer */
-    stream->_read_pos = 0;
+    stream->_position = 0;
 
     return stream;
 }
@@ -82,85 +87,178 @@ FUNC_DECL_PREFIX int so_fclose(SO_FILE *stream) {
     return 0;
 }
 
-FUNC_DECL_PREFIX int so_fflush(SO_FILE *stream) { return 0; }
+FUNC_DECL_PREFIX int so_fflush(SO_FILE *stream) {
+    int to_write;
+    ssize_t last_write = 0;
+    ssize_t total_write = 0;
 
-FUNC_DECL_PREFIX int so_fseek(SO_FILE *stream, long offset, int whence) {}
-FUNC_DECL_PREFIX long so_ftell(SO_FILE *stream) {}
+    if (stream->_last_op != OP_WRITE) {
+        memset(stream->_buf, 0, BUFSIZE);
+        stream->_position = 0;
+        stream->_last_op = 0;
+        return 0;
+    }
 
-FUNC_DECL_PREFIX
-size_t so_fread(void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
-    size_t bytes_read = 0;
-    size_t bytes_current = 0;
-    size_t bytes_total = size * nmemb;
+    to_write = stream->_position;
+    if (stream->_last_op == OP_WRITE) {
+        if (to_write < 0) { return SO_EOF; }
 
-    if (stream->_eof) { return 0; }
+        while (to_write > 0) {
+            last_write =
+                write(stream->_fd, stream->_buf + total_write, to_write);
 
-    while (bytes_current < bytes_total) {
-        /* Make sure we have data in the buffer */
-        if (stream->_read_pos == 0) {
-            /* Buffer empty */
-            size_t read_s;
-            read_s = read(stream->_fd, stream->_buf, BUFSIZE);
-
-            if (read_s < 0) {
-                /* Read error */
+            if (last_write < 0) {
                 stream->_err = 1;
                 return SO_EOF;
             }
 
-            if (read_s == 0) { stream->_eof = 1; }
+            to_write -= last_write;
+            total_write += last_write;
         }
 
-        /* Compute the remaining amount of data that will be read */
-        int size_to_read = bytes_total - bytes_current;
-        int udata_size = BUFSIZE - stream->_read_pos;
-        size_to_read = min(size_to_read, udata_size);
-
-        /* Move the data from the buffer */
-        memcpy(ptr + bytes_current, stream->_buf + stream->_read_pos,
-               size_to_read);
-
-        stream->_read_pos += size_to_read;
-        if (stream->_read_pos == BUFSIZE) { stream->_read_pos = 0; }
-
-        bytes_current += size_to_read;
+        memset(stream->_buf, 0, BUFSIZE);
+        stream->_position = 0;
+        stream->_last_op = 0;
     }
 
-    return bytes_current / size;
+    return 0;
 }
 
-FUNC_DECL_PREFIX
-size_t so_fwrite(const void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {}
+FUNC_DECL_PREFIX int so_fseek(SO_FILE *stream, long offset, int whence) {
+    int rc;
 
-FUNC_DECL_PREFIX int so_fgetc(SO_FILE *stream) {
-    size_t read_c;
-    unsigned char ret_val;
+    rc = so_fflush(stream);
+    if (rc < 0) {
+        stream->_err = 1;
+        return SO_EOF;
+    }
 
-    if (stream->_read_pos == 0) {
-        /* Buffer empty */
-        read_c = read(stream->_fd, stream->_buf, BUFSIZE);
+    if (whence == SEEK_END || whence == SEEK_CUR || whence == SEEK_SET) {
+        rc = lseek(stream->_fd, offset, whence);
 
-        if (read < 0) {
-            /* Read error */
+        if (rc < 0) {
+            stream->_err = 1;
             return SO_EOF;
         }
 
-        ret_val = stream->_buf[stream->_read_pos];
-        stream->_read_pos += 1;
-    } else {
-        ret_val = stream->_buf[stream->_read_pos];
-        stream->_read_pos += 1;
-
-        if (stream->_read_pos == BUFSIZE) { stream->_read_pos = 0; }
+        stream->_total_bytes = rc;
     }
-
-    return ret_val;
+    return 0;
 }
 
-FUNC_DECL_PREFIX int so_fputc(int c, SO_FILE *stream) {}
+FUNC_DECL_PREFIX long so_ftell(SO_FILE *stream) {
+    return stream->_position + stream->_total_bytes;
+}
 
-FUNC_DECL_PREFIX int so_feof(SO_FILE *stream) {}
-FUNC_DECL_PREFIX int so_ferror(SO_FILE *stream) {}
+FUNC_DECL_PREFIX
+size_t so_fread(void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
+    size_t bytesRead = nmemb * size;
+    size_t i;
+    int val;
+    uchar *p = ptr;
+
+    if (stream == NULL) { return SO_EOF; }
+
+    for (i = 0; i < bytesRead; ++i) {
+        val = so_fgetc(stream);
+
+        if (val < 0) { return SO_EOF; }
+
+        *p = val;
+        p++;
+    }
+
+    return nmemb;
+}
+
+FUNC_DECL_PREFIX
+size_t so_fwrite(const void *ptr, size_t size, size_t nmemb, SO_FILE *stream) {
+    size_t bytesWritten = size * nmemb;
+    size_t i;
+    int val, rc;
+    uchar *p = ptr;
+
+    if (stream == NULL) { return SO_EOF; }
+
+    for (i = 0; i < bytesWritten; ++i) {
+        val = *p;
+        rc = so_fputc(val, stream);
+
+        if (rc < 0) { return SO_EOF; }
+
+        p++;
+    }
+
+    return nmemb;
+}
+
+int refillBuffer(SO_FILE *stream) {
+    ssize_t read_c;
+    /* Buffer empty */
+    read_c = read(stream->_fd, stream->_buf, BUFSIZE);
+
+    if (read < 0) {
+        /* Read error */
+        stream->_err = 1;
+        stream->_last_op = OP_READ;
+        return SO_EOF;
+    }
+
+    if (read == 0) {
+        /* EOF */
+        stream->_eof = 1;
+        return SO_EOF;
+    }
+
+    stream->_last_read = read_c;
+    stream->_total_bytes = read_c;
+    return 0;
+}
+
+FUNC_DECL_PREFIX int so_fgetc(SO_FILE *stream) {
+    unsigned char val;
+    int read_again = 0;
+
+    /* If we "exhausted" the buffer */
+    if (stream->_position >= stream->_last_read) {
+        stream->_position = 0;
+        stream->_last_read = 0;
+        read_again = 1;
+    }
+
+    if (read_again) {
+        /* Buffer empty */
+        if (refillBuffer(stream) != 0) { return SO_EOF; }
+    }
+
+    val = stream->_buf[stream->_position];
+    stream->_last_op = OP_READ;
+    stream->_position += 1;
+
+    return val;
+}
+
+FUNC_DECL_PREFIX int so_fputc(int c, SO_FILE *stream) {
+    int rc;
+    stream->_last_op = OP_WRITE;
+
+    if (stream->_position == BUFSIZE) {
+        stream->_total_bytes = stream->_position;
+        rc = so_fflush(stream);
+        if (rc == SO_EOF) {
+            stream->_err = 1;
+            return SO_EOF;
+        }
+    }
+
+    stream->_buf[stream->_position] = c;
+    stream->_position += 1;
+
+    return c;
+}
+
+FUNC_DECL_PREFIX int so_feof(SO_FILE *stream) { return stream->_eof; }
+FUNC_DECL_PREFIX int so_ferror(SO_FILE *stream) { return stream->_err; }
 
 FUNC_DECL_PREFIX SO_FILE *so_popen(const char *command, const char *type) {}
 FUNC_DECL_PREFIX int so_pclose(SO_FILE *stream) {}

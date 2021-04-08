@@ -53,8 +53,4 @@ dkms.conf
 
 bin/*
 .vscode/
-out.txt
-in.txt
-test32.h
-CProcessor.zip
-so-cpp
+*.zip
