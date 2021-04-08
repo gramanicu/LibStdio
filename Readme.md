@@ -42,3 +42,5 @@ There are a few simple functions, that only return some data from the stream (pr
 
 - [OS Laboratory](https://ocw.cs.pub.ro/courses/so)
 - [Make template](https://gist.github.com/keeferrourke/fe72476a8dd8c4c02ff18eaed74e1de0)
+
+© 2021 Grama Nicolae, 332CA
